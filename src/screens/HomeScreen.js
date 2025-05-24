@@ -1,15 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  RefreshControl,
-  ScrollView,
-  Alert,
-  Animated,
-  Dimensions,
-} from 'react-native';
+import { View, Text, StyleSheet, ScrollView, RefreshControl } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Location from 'expo-location';
 import { theme } from '../theme';
@@ -19,430 +9,78 @@ import Button from '../components/ui/Button';
 import Card from '../components/ui/Card';
 import StatusBadge from '../components/ui/StatusBadge';
 
-const { width } = Dimensions.get('window');
+import { initModel, predictSeverity } from '../utils/severityModel';
 
 export default function HomeScreen({ navigation }) {
-  const { refreshData, setUserLocation, getNearbyHazards, loading, lastUpdated, error } = useAlerts();
+  const {
+    refreshData, setUserLocation,
+    getNearbyHazards, loading, lastUpdated, error
+  } = useAlerts();
+
   const [showChecklist, setShowChecklist] = useState(false);
   const [locationPermission, setLocationPermission] = useState(null);
-  const [fadeAnim] = useState(new Animated.Value(0));
-  const [slideAnim] = useState(new Animated.Value(50));
 
   useEffect(() => {
-    requestLocationPermission();
-    
-    // Entrance animation
-    Animated.parallel([
-      Animated.timing(fadeAnim, {
-        toValue: 1,
-        duration: 800,
-        useNativeDriver: true,
-      }),
-      Animated.timing(slideAnim, {
-        toValue: 0,
-        duration: 600,
-        useNativeDriver: true,
-      }),
-    ]).start();
+    // 1) Request location, refresh data
+    (async () => {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      setLocationPermission(status==='granted');
+      let coords;
+      if (status==='granted') {
+        const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        coords = { latitude: loc.coords.latitude, longitude: loc.coords.longitude, altitude: loc.coords.altitude||0 };
+      } else {
+        coords = { latitude:37.3230, longitude:-122.0322, altitude:0 };
+      }
+      setUserLocation(coords);
+      await refreshData();
+      // 2) Initialize your ML model
+      await initModel();
+    })();
   }, []);
 
-  const requestLocationPermission = async () => {
-    try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      setLocationPermission(status === 'granted');
-      
-      if (status === 'granted') {
-        const location = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
-        });
-        setUserLocation({
-          latitude: location.coords.latitude,
-          longitude: location.coords.longitude,
-        });
-        
-        // Auto-refresh data when location is obtained
-        await refreshData();
-      } else {
-        // Fallback to Cupertino, CA
-        setUserLocation({
-          latitude: 37.3230,
-          longitude: -122.0322,
-        });
-      }
-    } catch (error) {
-      console.error('Error getting location:', error);
-      setUserLocation({
-        latitude: 37.3230,
-        longitude: -122.0322,
-      });
-    }
-  };
-
-  const handleRefresh = async () => {
-    await refreshData();
-  };
-
-  const nearbyHazards = getNearbyHazards();
-  const hasNearbyHazards = nearbyHazards.length > 0;
-  const criticalHazards = nearbyHazards.filter(h => 
-    h.type === 'earthquake' || h.type === 'wildfire' || h.type === 'tornado'
-  );
-
-  const formatLastUpdated = () => {
-    if (!lastUpdated) return 'Never updated';
-    const date = new Date(lastUpdated);
-    const now = new Date();
-    const diffMinutes = Math.floor((now - date) / (1000 * 60));
-    
-    if (diffMinutes < 1) return 'Just updated';
-    if (diffMinutes < 60) return `Updated ${diffMinutes}m ago`;
-    const diffHours = Math.floor(diffMinutes / 60);
-    if (diffHours < 24) return `Updated ${diffHours}h ago`;
-    return `Updated ${date.toLocaleDateString()}`;
-  };
-
-  const getStatusInfo = () => {
-    if (criticalHazards.length > 0) {
-      return { status: 'active', text: `${criticalHazards.length} Critical Alert${criticalHazards.length > 1 ? 's' : ''}` };
-    }
-    if (hasNearbyHazards) {
-      return { status: 'warning', text: `${nearbyHazards.length} Active Alert${nearbyHazards.length > 1 ? 's' : ''}` };
-    }
-    return { status: 'safe', text: 'All Clear' };
-  };
-
-  const statusInfo = getStatusInfo();
+  // 3) Fetch hazards and compute ML severity
+  const nearby = getNearbyHazards();
+  const hazards = nearby.map(h => ({
+    ...h,
+    severity: predictSeverity({
+      distance:  h.distanceMeters,           // assume getNearbyHazards gives this
+      hazardType:h.type,
+      magnitude: h.magnitude||0,
+      waterDepth:h.waterDepth||0,
+      windSpeed: h.windSpeed||0,
+      elevation: h.userElevation||0,
+      timeOfDay: new Date().getHours()
+    })
+  }));
 
   return (
-    <LinearGradient
-      colors={theme.gradients.background}
-      style={styles.container}
-    >
+    <LinearGradient colors={[theme.colors.primary, theme.colors.secondary]} style={{flex:1}}>
       <ScrollView
         style={styles.scrollView}
-        contentContainerStyle={styles.content}
-        refreshControl={
-          <RefreshControl
-            refreshing={loading}
-            onRefresh={handleRefresh}
-            tintColor={theme.colors.primary}
-            colors={[theme.colors.primary]}
-          />
-        }
-        showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={loading} onRefresh={refreshData}/>}
       >
-        <Animated.View 
-          style={[
-            styles.header,
-            {
-              opacity: fadeAnim,
-              transform: [{ translateY: slideAnim }],
-            },
-          ]}
-        >
-          {/* App Title */}
-          <View style={styles.titleContainer}>
-            <Text style={styles.title}>SafeSpot</Text>
-            <Text style={styles.subtitle}>
-              Real-time disaster monitoring & emergency shelter finder
-            </Text>
-          </View>
-
-          {/* Status Badge */}
-          <View style={styles.statusContainer}>
-            <StatusBadge status={statusInfo.status} text={statusInfo.text} size="large" />
-          </View>
-        </Animated.View>
-
-        {/* Location Status */}
-        {locationPermission === false && (
-          <Card variant="warning" style={styles.alertCard}>
-            <Text style={styles.alertTitle}>📍 Location Access Required</Text>
-            <Text style={styles.alertText}>
-              Enable location permissions for personalized disaster alerts and nearby shelter recommendations.
-            </Text>
-            <Button
-              title="Enable Location"
-              variant="outline"
-              size="small"
-              onPress={() => requestLocationPermission()}
-              style={styles.alertButton}
-            />
-          </Card>
-        )}
-
-        {/* Critical Hazard Alert */}
-        {criticalHazards.length > 0 && (
-          <Card variant="danger" style={styles.criticalAlert}>
-            <Text style={styles.criticalAlertTitle}>
-              ⚠️ CRITICAL ALERT
-            </Text>
-            <Text style={styles.criticalAlertText}>
-              {criticalHazards[0].event} detected in your area
-            </Text>
-            <Button
-              title="View on Map"
-              variant="outline"
-              size="small"
-              onPress={() => navigation.navigate('Map')}
-              style={styles.criticalAlertButton}
-            />
-          </Card>
-        )}
-
-        {/* Main Action Cards */}
-        <View style={styles.actionGrid}>
-          <TouchableOpacity
-            style={styles.actionCard}
-            onPress={() => navigation.navigate('Map')}
-            activeOpacity={0.8}
-          >
-            <LinearGradient
-              colors={['#DC2626', '#EF4444']}
-              style={styles.actionCardGradient}
-            >
-              <Text style={styles.actionCardIcon}>🗺️</Text>
-              <Text style={styles.actionCardTitle}>Current Hazards</Text>
-              <Text style={styles.actionCardSubtitle}>
-                {nearbyHazards.length} active alerts nearby
-              </Text>
-            </LinearGradient>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.actionCard}
-            onPress={() => navigation.navigate('Shelters')}
-            activeOpacity={0.8}
-          >
-            <LinearGradient
-              colors={['#2563EB', '#3B82F6']}
-              style={styles.actionCardGradient}
-            >
-              <Text style={styles.actionCardIcon}>🏠</Text>
-              <Text style={styles.actionCardTitle}>Find Shelter</Text>
-              <Text style={styles.actionCardSubtitle}>
-                Emergency shelters near you
-              </Text>
-            </LinearGradient>
-          </TouchableOpacity>
+        <View style={styles.content}>
+          <Text style={styles.title}>Nearby Hazards</Text>
+          {hazards.map(h => (
+            <Card key={h.id} style={styles.alertCard}>
+              <Text style={styles.alertTitle}>{h.type.toUpperCase()}</Text>
+              <Text style={styles.alertText}>Severity: {h.severity}/100</Text>
+              <StatusBadge severity={h.severity}/>
+            </Card>
+          ))}
         </View>
-
-        {/* Quick Actions */}
-        <Card style={styles.quickActionsCard}>
-          <Text style={styles.quickActionsTitle}>Quick Actions</Text>
-          
-          <TouchableOpacity
-            style={styles.quickActionItem}
-            onPress={() => setShowChecklist(true)}
-          >
-            <View style={styles.quickActionIcon}>
-              <Text style={styles.quickActionIconText}>📋</Text>
-            </View>
-            <View style={styles.quickActionContent}>
-              <Text style={styles.quickActionTitle}>Emergency Checklists</Text>
-              <Text style={styles.quickActionSubtitle}>Safety guidelines for disasters</Text>
-            </View>
-            <Text style={styles.quickActionArrow}>›</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.quickActionItem}
-            onPress={handleRefresh}
-            disabled={loading}
-          >
-            <View style={styles.quickActionIcon}>
-              <Text style={styles.quickActionIconText}>🔄</Text>
-            </View>
-            <View style={styles.quickActionContent}>
-              <Text style={styles.quickActionTitle}>Refresh Data</Text>
-              <Text style={styles.quickActionSubtitle}>{formatLastUpdated()}</Text>
-            </View>
-            <Text style={styles.quickActionArrow}>›</Text>
-          </TouchableOpacity>
-        </Card>
-
-        {/* Error State */}
-        {error && (
-          <Card variant="danger" style={styles.errorCard}>
-            <Text style={styles.errorTitle}>⚠️ Connection Error</Text>
-            <Text style={styles.errorText}>{error}</Text>
-            <Button
-              title="Retry"
-              variant="outline"
-              size="small"
-              onPress={handleRefresh}
-              loading={loading}
-              style={styles.errorButton}
-            />
-          </Card>
-        )}
       </ScrollView>
-
-      {/* Checklist Modal */}
-      <ChecklistModal
-        visible={showChecklist}
-        onClose={() => setShowChecklist(false)}
-      />
+      <ChecklistModal visible={showChecklist} onClose={()=>setShowChecklist(false)}/>
     </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  scrollView: {
-    flex: 1,
-  },
-  content: {
-    padding: theme.spacing.lg,
-    paddingBottom: theme.spacing.xxxl,
-  },
-  header: {
-    marginBottom: theme.spacing.xl,
-  },
-  titleContainer: {
-    alignItems: 'center',
-    marginBottom: theme.spacing.lg,
-  },
-  title: {
-    ...theme.typography.displayLarge,
-    color: theme.colors.textPrimary,
-    marginBottom: theme.spacing.sm,
-  },
-  subtitle: {
-    ...theme.typography.bodyLarge,
-    color: theme.colors.textSecondary,
-    textAlign: 'center',
-    maxWidth: width * 0.8,
-  },
-  statusContainer: {
-    alignItems: 'center',
-  },
-  alertCard: {
-    marginBottom: theme.spacing.lg,
-  },
-  alertTitle: {
-    ...theme.typography.h3,
-    color: theme.colors.textPrimary,
-    marginBottom: theme.spacing.sm,
-  },
-  alertText: {
-    ...theme.typography.bodyMedium,
-    color: theme.colors.textSecondary,
-    marginBottom: theme.spacing.md,
-  },
-  alertButton: {
-    alignSelf: 'flex-start',
-  },
-  criticalAlert: {
-    marginBottom: theme.spacing.lg,
-    borderWidth: 2,
-    borderColor: theme.colors.error,
-  },
-  criticalAlertTitle: {
-    ...theme.typography.h2,
-    color: '#FFFFFF',
-    marginBottom: theme.spacing.sm,
-    fontWeight: '700',
-  },
-  criticalAlertText: {
-    ...theme.typography.bodyLarge,
-    color: '#FFFFFF',
-    marginBottom: theme.spacing.md,
-  },
-  criticalAlertButton: {
-    alignSelf: 'flex-start',
-  },
-  actionGrid: {
-    flexDirection: 'row',
-    gap: theme.spacing.md,
-    marginBottom: theme.spacing.xl,
-  },
-  actionCard: {
-    flex: 1,
-    borderRadius: theme.borderRadius.lg,
-    overflow: 'hidden',
-    ...theme.shadows.medium,
-  },
-  actionCardGradient: {
-    padding: theme.spacing.lg,
-    alignItems: 'center',
-    minHeight: 140,
-    justifyContent: 'center',
-  },
-  actionCardIcon: {
-    fontSize: 32,
-    marginBottom: theme.spacing.md,
-  },
-  actionCardTitle: {
-    ...theme.typography.h3,
-    color: '#FFFFFF',
-    textAlign: 'center',
-    marginBottom: theme.spacing.sm,
-  },
-  actionCardSubtitle: {
-    ...theme.typography.bodySmall,
-    color: 'rgba(255, 255, 255, 0.8)',
-    textAlign: 'center',
-  },
-  quickActionsCard: {
-    marginBottom: theme.spacing.lg,
-  },
-  quickActionsTitle: {
-    ...theme.typography.h3,
-    color: theme.colors.textPrimary,
-    marginBottom: theme.spacing.lg,
-  },
-  quickActionItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: theme.spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
-  },
-  quickActionIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: theme.borderRadius.md,
-    backgroundColor: theme.colors.backgroundSecondary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: theme.spacing.md,
-  },
-  quickActionIconText: {
-    fontSize: 18,
-  },
-  quickActionContent: {
-    flex: 1,
-  },
-  quickActionTitle: {
-    ...theme.typography.bodyLarge,
-    color: theme.colors.textPrimary,
-    marginBottom: theme.spacing.xs,
-  },
-  quickActionSubtitle: {
-    ...theme.typography.bodySmall,
-    color: theme.colors.textSecondary,
-  },
-  quickActionArrow: {
-    ...theme.typography.h2,
-    color: theme.colors.textTertiary,
-  },
-  errorCard: {
-    marginBottom: theme.spacing.lg,
-  },
-  errorTitle: {
-    ...theme.typography.h3,
-    color: '#FFFFFF',
-    marginBottom: theme.spacing.sm,
-  },
-  errorText: {
-    ...theme.typography.bodyMedium,
-    color: 'rgba(255, 255, 255, 0.8)',
-    marginBottom: theme.spacing.md,
-  },
-  errorButton: {
-    alignSelf: 'flex-start',
-  },
+  scrollView: { flex:1 },
+  content: { padding: theme.spacing.lg },
+  title: { fontSize:24, fontWeight:'600', marginBottom:12, color:theme.colors.textPrimary },
+  alertCard: { marginBottom:theme.spacing.md },
+  alertTitle: { fontSize:18, fontWeight:'500' },
+  alertText: { fontSize:16, marginTop:4 }
 });
